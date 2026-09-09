@@ -1,34 +1,48 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
 
 namespace ClaudeStatusLight;
 
+/// <summary>One row in the panel: a session's status dot plus its label.</summary>
+internal sealed record SessionRow(string Label, Color Color);
+
 public sealed class StatusLightForm : Form
 {
-    private const int Diameter = 48;
-    private static readonly Color TransparentColor = Color.FromArgb(255, 1, 2, 3);
+    private const int DotDiameter = 12;
+    private const int RowHeight = 28;
+    private const int PaddingX = 10;
+    private const int PaddingY = 6;
+    private const int LabelGap = 8;
+    private const int MinWidth = 140;
+    private const int MaxWidth = 320;
+    private const int CornerRadius = 10;
+
+    private static readonly Color BackgroundColor = Color.FromArgb(30, 32, 36);
+    private static readonly Color BorderColor = Color.FromArgb(60, 62, 68);
+    private static readonly Color LabelColor = Color.FromArgb(225, 226, 230);
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(15);
 
     private static readonly string DataDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ClaudeStatusLight");
 
-    private static readonly string StatusFile = Path.Combine(DataDir, "status.json");
+    private static readonly string SessionsDir = Path.Combine(DataDir, "sessions");
     private static readonly string PositionFile = Path.Combine(DataDir, "position.json");
 
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 500 };
-    private readonly ToolTip _toolTip = new();
+    private readonly Font _labelFont = new("Segoe UI", 9f);
 
     private Point _dragStart;
     private bool _dragging;
-
-    private string _currentStatus = string.Empty;
-    private Color _currentColor = Color.Gray;
+    private string _lastSignature = string.Empty;
+    private List<SessionRow> _rows = new();
 
     public StatusLightForm()
     {
@@ -36,12 +50,12 @@ public sealed class StatusLightForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(Diameter, Diameter);
-        BackColor = TransparentColor;
-        TransparencyKey = TransparentColor;
+        BackColor = BackgroundColor;
         DoubleBuffered = true;
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
+        Size = new Size(MinWidth, PaddingY * 2 + RowHeight);
+        ApplyRoundedRegion();
         Location = ClampToWorkingArea(LoadPosition() ?? DefaultPosition());
 
         var menu = new ContextMenuStrip();
@@ -63,14 +77,14 @@ public sealed class StatusLightForm : Form
     private static Point DefaultPosition()
     {
         var wa = Screen.PrimaryScreen!.WorkingArea;
-        return new Point(wa.Right - Diameter - 24, 24);
+        return new Point(wa.Right - MinWidth - 24, 24);
     }
 
-    private static Point ClampToWorkingArea(Point location)
+    private Point ClampToWorkingArea(Point location)
     {
         var wa = Screen.GetWorkingArea(location);
-        var x = Math.Clamp(location.X, wa.Left, Math.Max(wa.Left, wa.Right - Diameter));
-        var y = Math.Clamp(location.Y, wa.Top, Math.Max(wa.Top, wa.Bottom - Diameter));
+        var x = Math.Clamp(location.X, wa.Left, Math.Max(wa.Left, wa.Right - Width));
+        var y = Math.Clamp(location.Y, wa.Top, Math.Max(wa.Top, wa.Bottom - Height));
         return new Point(x, y);
     }
 
@@ -105,48 +119,117 @@ public sealed class StatusLightForm : Form
 
     private void PollStatus()
     {
-        var status = "idle";
-        DateTime? updatedUtc = null;
+        var sessions = ReadActiveSessions();
 
+        var rows = sessions.Count == 0
+            ? new List<SessionRow> { new("No active session", ColorForStatus("idle")) }
+            : sessions.Select(s => new SessionRow(s.Label, ColorForStatus(s.Status))).ToList();
+
+        var signature = string.Join("|", rows.Select(r => $"{r.Label}:{r.Color.ToArgb()}"));
+        if (signature == _lastSignature) return;
+        _lastSignature = signature;
+        _rows = rows;
+
+        Size = new Size(ComputeWidth(rows), PaddingY * 2 + RowHeight * rows.Count);
+        ApplyRoundedRegion();
+        Location = ClampToWorkingArea(Location);
+        Invalidate();
+    }
+
+    private int ComputeWidth(List<SessionRow> rows)
+    {
+        using var g = CreateGraphics();
+        var maxLabelWidth = rows.Count == 0
+            ? 0
+            : rows.Max(r => TextRenderer.MeasureText(g, r.Label, _labelFont).Width);
+        var width = PaddingX + DotDiameter + LabelGap + maxLabelWidth + PaddingX;
+        return Math.Clamp(width, MinWidth, MaxWidth);
+    }
+
+    private sealed record ActiveSession(string Status, string Label);
+
+    private List<ActiveSession> ReadActiveSessions()
+    {
+        var result = new List<ActiveSession>();
+        var labelCounts = new Dictionary<string, int>();
+
+        if (!Directory.Exists(SessionsDir)) return result;
+
+        IEnumerable<string> files;
         try
         {
-            if (File.Exists(StatusFile))
-            {
-                var json = File.ReadAllText(StatusFile);
-                var data = JsonSerializer.Deserialize<StatusPayload>(json);
-                if (data is not null)
-                {
-                    status = data.status ?? "idle";
-                    if (DateTime.TryParse(data.updated, CultureInfo.InvariantCulture,
-                            DateTimeStyles.RoundtripKind, out var dt))
-                    {
-                        updatedUtc = dt.ToUniversalTime();
-                    }
-                }
-            }
-        }
-        catch (IOException)
-        {
-            return; // hook script is mid-write, just retry next tick
+            files = Directory.EnumerateFiles(SessionsDir, "*.json").OrderBy(f => f, StringComparer.Ordinal);
         }
         catch
         {
-            status = "idle";
+            return result;
         }
 
-        // If any non-idle status hasn't been refreshed in a while (session killed, crash,
-        // laptop slept mid-task), fall back to idle rather than showing a stale state forever.
-        if (updatedUtc is not null && DateTime.UtcNow - updatedUtc.Value > StaleAfter)
+        foreach (var file in files)
         {
-            status = "idle";
+            SessionPayload? data;
+            try
+            {
+                var json = File.ReadAllText(file);
+                data = JsonSerializer.Deserialize<SessionPayload>(json);
+            }
+            catch (IOException)
+            {
+                continue; // hook script is mid-write, just retry next tick
+            }
+            catch
+            {
+                continue; // corrupt/partial file, skip it
+            }
+
+            if (data?.status is null) continue;
+
+            DateTime? updatedUtc = null;
+            if (data.updated is not null &&
+                DateTime.TryParse(data.updated, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dt))
+            {
+                updatedUtc = dt.ToUniversalTime();
+            }
+
+            if (updatedUtc is null || DateTime.UtcNow - updatedUtc.Value > StaleAfter)
+            {
+                // Session crashed or ended without firing SessionEnd; stop showing it.
+                TryDelete(file);
+                continue;
+            }
+
+            var id = Path.GetFileNameWithoutExtension(file);
+            var baseLabel = FriendlyName(data.cwd, id);
+            labelCounts[baseLabel] = labelCounts.GetValueOrDefault(baseLabel) + 1;
+            result.Add(new ActiveSession(data.status, baseLabel));
         }
 
-        if (status == _currentStatus) return;
+        // Disambiguate sessions that share a folder name (e.g. worktrees) with a short id suffix.
+        var seen = new Dictionary<string, int>();
+        for (var i = 0; i < result.Count; i++)
+        {
+            var row = result[i];
+            if (labelCounts[row.Label] <= 1) continue;
+            var n = seen[row.Label] = seen.GetValueOrDefault(row.Label) + 1;
+            result[i] = row with { Label = $"{row.Label} ({n})" };
+        }
 
-        _currentStatus = status;
-        _currentColor = ColorForStatus(status);
-        _toolTip.SetToolTip(this, TooltipForStatus(status));
-        Invalidate();
+        return result;
+    }
+
+    private static string FriendlyName(string? cwd, string sessionId)
+    {
+        if (!string.IsNullOrWhiteSpace(cwd))
+        {
+            var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
+            if (!string.IsNullOrWhiteSpace(name)) return name;
+        }
+        return sessionId.Length > 8 ? sessionId[..8] : sessionId;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch { /* best effort cleanup */ }
     }
 
     private static Color ColorForStatus(string status) => status switch
@@ -154,30 +237,64 @@ public sealed class StatusLightForm : Form
         "waiting" => Color.FromArgb(230, 60, 60),
         "running" => Color.FromArgb(255, 190, 30),
         "done" => Color.FromArgb(45, 200, 110),
-        _ => Color.FromArgb(130, 130, 130), // idle / no session
+        _ => Color.FromArgb(130, 130, 130), // idle
     };
 
-    private static string TooltipForStatus(string status) => status switch
+    private void ApplyRoundedRegion()
     {
-        "waiting" => "Claude Code: waiting for confirmation",
-        "running" => "Claude Code: running",
-        "done" => "Claude Code: finished, ready for a new task",
-        _ => "Claude Code: no active session",
-    };
+        using var path = RoundedRectPath(new Rectangle(Point.Empty, Size), CornerRadius);
+        var oldRegion = Region;
+        Region = new Region(path);
+        oldRegion?.Dispose();
+    }
+
+    private static GraphicsPath RoundedRectPath(Rectangle rect, int radius)
+    {
+        var d = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        var rect = new Rectangle(4, 4, Diameter - 8, Diameter - 8);
+        using (var border = new Pen(BorderColor, 1f))
+        {
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using var borderPath = RoundedRectPath(rect, CornerRadius);
+            g.DrawPath(border, borderPath);
+        }
 
-        using var fill = new SolidBrush(_currentColor);
-        g.FillEllipse(fill, rect);
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            var row = _rows[i];
+            var top = PaddingY + i * RowHeight;
+            var dotRect = new Rectangle(PaddingX, top + (RowHeight - DotDiameter) / 2, DotDiameter, DotDiameter);
 
-        using var outline = new Pen(Color.FromArgb(60, 0, 0, 0), 2f);
-        g.DrawEllipse(outline, rect);
+            using (var fill = new SolidBrush(row.Color))
+            {
+                g.FillEllipse(fill, dotRect);
+            }
+            using (var outline = new Pen(Color.FromArgb(70, 0, 0, 0), 1.5f))
+            {
+                g.DrawEllipse(outline, dotRect);
+            }
+
+            var textRect = new Rectangle(
+                dotRect.Right + LabelGap, top,
+                Width - dotRect.Right - LabelGap - PaddingX, RowHeight);
+            TextRenderer.DrawText(g, row.Label, _labelFont, textRect, LabelColor,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+        }
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -200,10 +317,21 @@ public sealed class StatusLightForm : Form
         SavePosition();
     }
 
-    private sealed class StatusPayload
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _pollTimer.Dispose();
+            _labelFont.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private sealed class SessionPayload
     {
         public string? status { get; set; }
         public string? updated { get; set; }
+        public string? cwd { get; set; }
     }
 
     private sealed class SavedPosition

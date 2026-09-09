@@ -2,13 +2,18 @@
 
 Small always-on-top overlay that mirrors Claude Code's state, same idea as the
 physical traffic light: grey = idle, amber = running, red = waiting for
-confirmation, green = finished and ready for a new task.
+confirmation, green = finished and ready for a new task. One row per session,
+each labelled with its project folder, so it stays useful with more than one
+Claude Code session running at once.
 
 ## How it works
 
-- Claude Code hooks write status to `%LOCALAPPDATA%\ClaudeStatusLight\status.json`
-- The WinForms overlay polls that file every 500ms and recolours a small
-  draggable dot pinned on top of everything else
+- Claude Code hooks write each session's status to
+  `%LOCALAPPDATA%\ClaudeStatusLight\sessions\<session-id>.json`
+- The WinForms overlay polls that folder every 500ms and redraws a small
+  draggable panel: one coloured dot + session label per active session. A
+  session's row disappears when it ends (`SessionEnd` deletes its file), or
+  after 15 minutes with no update if it crashed without firing that hook
 
 ## Setup
 
@@ -42,22 +47,27 @@ To build without installing, `dotnet publish -c Release` from
 **3. Run it**
 
 Double-click `ClaudeStatusLight.exe` (in the install location above, or
-wherever you copied it). A grey dot appears top-right. Drag it anywhere, its
-position is remembered on restart. Right-click to exit.
+wherever you copied it). A small panel appears top-right, showing "No active
+session" while nothing's running. Drag it anywhere, its position is
+remembered on restart. Right-click to exit.
 
 **Run at login (optional):** press `Win+R`, type `shell:startup`, drop a
 shortcut to the installed exe in there.
 
 ## Known limitation
 
-The status file is global, not per-project. If you run more than one Claude
-Code session at once, the light reflects whichever session fired a hook most
-recently, not each session individually.
+Two sessions open in the same folder (e.g. two windows on the same project,
+without git worktrees) get distinct rows disambiguated as `name (1)`,
+`name (2)`, but there's no way to tell which row is which session beyond that.
 
 ## Testing without Claude Code
+
+Each call below writes to a "manual" session row, since there's no real
+Claude Code hook payload behind it:
 
 ```
 powershell -File hooks\set-status.ps1 waiting
 powershell -File hooks\set-status.ps1 running
 powershell -File hooks\set-status.ps1 done
+powershell -File hooks\set-status.ps1 ended
 ```

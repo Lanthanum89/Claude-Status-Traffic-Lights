@@ -74,7 +74,7 @@ Add-StatusHook 'SessionStart'     'idle'
 Add-StatusHook 'UserPromptSubmit' 'running'
 Add-StatusHook 'Notification'     'waiting'
 Add-StatusHook 'Stop'             'done'
-Add-StatusHook 'SessionEnd'       'idle'
+Add-StatusHook 'SessionEnd'       'ended'
 
 $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
 
