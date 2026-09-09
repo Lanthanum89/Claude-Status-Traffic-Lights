@@ -21,26 +21,32 @@ powershell -ExecutionPolicy Bypass -File hooks\install-hooks.ps1
 This merges hook entries into `~\.claude\settings.json`, backing up any
 existing file first. Safe to re-run.
 
-**2. Build the overlay app**
+**2. Build and install the overlay app**
 
 Requires the .NET 8 SDK (`dotnet --version` to check).
 
 ```
-cd ClaudeStatusLight
-dotnet publish -c Release
+powershell -ExecutionPolicy Bypass -File publish.ps1
 ```
 
-Output exe: `bin\Release\net8.0-windows\win-x64\publish\ClaudeStatusLight.exe`
-It's self-contained, so you can copy that one file anywhere without installing
-the .NET runtime.
+This publishes the app and copies the exe to
+`%LOCALAPPDATA%\Programs\ClaudeStatusLight\ClaudeStatusLight.exe`. Re-run it
+after pulling changes to redeploy; it's self-contained, so nothing else needs
+installing. If the app is currently running, exit it first (right-click the
+dot -> Exit) so the exe isn't locked when the script overwrites it.
+
+To build without installing, `dotnet publish -c Release` from
+`ClaudeStatusLight\` produces the same exe under
+`bin\Release\net8.0-windows\win-x64\publish\`.
 
 **3. Run it**
 
-Double-click `ClaudeStatusLight.exe`. A grey dot appears top-right. Drag it
-anywhere, its position is remembered on restart. Right-click to exit.
+Double-click `ClaudeStatusLight.exe` (in the install location above, or
+wherever you copied it). A grey dot appears top-right. Drag it anywhere, its
+position is remembered on restart. Right-click to exit.
 
 **Run at login (optional):** press `Win+R`, type `shell:startup`, drop a
-shortcut to the exe in there.
+shortcut to the installed exe in there.
 
 ## Known limitation
 
