@@ -54,6 +54,7 @@ public sealed class StatusLightForm : Form
 
     private static readonly string SessionsDir = Path.Combine(DataDir, "sessions");
     private static readonly string PositionFile = Path.Combine(DataDir, "position.json");
+    private static readonly string AliasesFile = Path.Combine(DataDir, "aliases.json");
 
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 500 };
     private readonly Font _labelFont = new("Segoe UI", 9f);
@@ -62,6 +63,8 @@ public sealed class StatusLightForm : Form
     private bool _dragging;
     private string _lastSignature = string.Empty;
     private List<SessionRow> _rows = new();
+    private Dictionary<string, string> _aliases = new();
+    private DateTime _aliasesLastWriteUtc = DateTime.MinValue;
 
     public StatusLightForm()
     {
@@ -176,6 +179,8 @@ public sealed class StatusLightForm : Form
 
     private List<ActiveSession> ReadActiveSessions()
     {
+        LoadAliasesIfChanged();
+
         var result = new List<ActiveSession>();
         var labelCounts = new Dictionary<string, int>();
 
@@ -225,7 +230,7 @@ public sealed class StatusLightForm : Form
             }
 
             var id = Path.GetFileNameWithoutExtension(file);
-            var baseLabel = FriendlyName(data.cwd, id);
+            var baseLabel = FriendlyName(data.cwd, id, _aliases);
             labelCounts[baseLabel] = labelCounts.GetValueOrDefault(baseLabel) + 1;
             result.Add(new ActiveSession(data.status, baseLabel));
         }
@@ -243,14 +248,49 @@ public sealed class StatusLightForm : Form
         return result;
     }
 
-    private static string FriendlyName(string? cwd, string sessionId)
+    private static string FriendlyName(string? cwd, string sessionId, IReadOnlyDictionary<string, string> aliases)
     {
+        var baseName = sessionId.Length > 8 ? sessionId[..8] : sessionId;
         if (!string.IsNullOrWhiteSpace(cwd))
         {
             var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-            if (!string.IsNullOrWhiteSpace(name)) return name;
+            if (!string.IsNullOrWhiteSpace(name)) baseName = name;
         }
-        return sessionId.Length > 8 ? sessionId[..8] : sessionId;
+
+        return aliases.TryGetValue(baseName, out var alias) && !string.IsNullOrWhiteSpace(alias)
+            ? alias
+            : baseName;
+    }
+
+    /// <summary>
+    /// Loads %LOCALAPPDATA%\ClaudeStatusLight\aliases.json, a flat { "folder-name": "Label" }
+    /// map for renaming rows in the panel. Optional -- absent or malformed just means no
+    /// aliases apply. Re-read only when the file's mtime changes, so hand-editing it while the
+    /// app is running takes effect within one poll tick, without re-parsing every tick.
+    /// </summary>
+    private void LoadAliasesIfChanged()
+    {
+        try
+        {
+            if (!File.Exists(AliasesFile))
+            {
+                if (_aliases.Count > 0) _aliases = new Dictionary<string, string>();
+                _aliasesLastWriteUtc = DateTime.MinValue;
+                return;
+            }
+
+            var writeTimeUtc = File.GetLastWriteTimeUtc(AliasesFile);
+            if (writeTimeUtc == _aliasesLastWriteUtc) return;
+
+            var json = File.ReadAllText(AliasesFile);
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            _aliases = parsed ?? new Dictionary<string, string>();
+            _aliasesLastWriteUtc = writeTimeUtc;
+        }
+        catch
+        {
+            // Malformed aliases.json -- keep the last good mapping rather than losing labels.
+        }
     }
 
     private static void TryDelete(string path)
