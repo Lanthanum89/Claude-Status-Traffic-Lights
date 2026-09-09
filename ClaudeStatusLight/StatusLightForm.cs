@@ -63,7 +63,7 @@ public sealed class StatusLightForm : Form
     private bool _dragging;
     private string _lastSignature = string.Empty;
     private List<SessionRow> _rows = new();
-    private Dictionary<string, string> _aliases = new();
+    private Dictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _aliasesLastWriteUtc = DateTime.MinValue;
 
     public StatusLightForm()
@@ -263,16 +263,23 @@ public sealed class StatusLightForm : Form
 
     private static string FriendlyName(string? cwd, string sessionId, IReadOnlyDictionary<string, string> aliases)
     {
-        var baseName = sessionId.Length > 8 ? sessionId[..8] : sessionId;
+        string? folderName = null;
         if (!string.IsNullOrWhiteSpace(cwd))
         {
             var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-            if (!string.IsNullOrWhiteSpace(name)) baseName = name;
+            if (!string.IsNullOrWhiteSpace(name)) folderName = name;
         }
 
-        return aliases.TryGetValue(baseName, out var alias) && !string.IsNullOrWhiteSpace(alias)
-            ? alias
-            : baseName;
+        // aliases.json maps folder names only -- never consult it for the sessionId fallback
+        // below, so an alias key can't accidentally rename a session with no usable cwd.
+        if (folderName is not null)
+        {
+            return aliases.TryGetValue(folderName, out var alias) && !string.IsNullOrWhiteSpace(alias)
+                ? alias
+                : folderName;
+        }
+
+        return sessionId.Length > 8 ? sessionId[..8] : sessionId;
     }
 
     /// <summary>
@@ -283,22 +290,35 @@ public sealed class StatusLightForm : Form
     /// </summary>
     private void LoadAliasesIfChanged()
     {
+        if (!File.Exists(AliasesFile))
+        {
+            if (_aliases.Count > 0) _aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _aliasesLastWriteUtc = DateTime.MinValue;
+            return;
+        }
+
+        DateTime writeTimeUtc;
         try
         {
-            if (!File.Exists(AliasesFile))
-            {
-                if (_aliases.Count > 0) _aliases = new Dictionary<string, string>();
-                _aliasesLastWriteUtc = DateTime.MinValue;
-                return;
-            }
+            writeTimeUtc = File.GetLastWriteTimeUtc(AliasesFile);
+        }
+        catch
+        {
+            return; // transient I/O issue, retry next tick
+        }
+        if (writeTimeUtc == _aliasesLastWriteUtc) return;
 
-            var writeTimeUtc = File.GetLastWriteTimeUtc(AliasesFile);
-            if (writeTimeUtc == _aliasesLastWriteUtc) return;
-
+        // Mark this mtime as attempted *before* parsing, even if parsing below fails, so a
+        // permanently malformed file gets re-parsed only when its mtime next changes rather
+        // than on every 500ms poll tick.
+        _aliasesLastWriteUtc = writeTimeUtc;
+        try
+        {
             var json = File.ReadAllText(AliasesFile);
             var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
-            _aliases = parsed ?? new Dictionary<string, string>();
-            _aliasesLastWriteUtc = writeTimeUtc;
+            _aliases = parsed is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
         }
         catch
         {
