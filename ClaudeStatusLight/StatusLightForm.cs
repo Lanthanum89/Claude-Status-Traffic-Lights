@@ -40,6 +40,7 @@ public sealed class StatusLightForm : Form
         BackColor = TransparentColor;
         TransparencyKey = TransparentColor;
         DoubleBuffered = true;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
         Location = ClampToWorkingArea(LoadPosition() ?? DefaultPosition());
 
