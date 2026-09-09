@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>ClaudeStatusLight</AssemblyName>
     <RootNamespace>ClaudeStatusLight</RootNamespace>
+    <ApplicationIcon>ClaudeStatusLight.ico</ApplicationIcon>
 
     <!-- Self-contained single-file publish: no .NET runtime needed on the machine that runs the exe -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
