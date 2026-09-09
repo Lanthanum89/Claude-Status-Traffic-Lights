@@ -20,4 +20,6 @@ $payload = @{
     updated = (Get-Date).ToUniversalTime().ToString('o')
 } | ConvertTo-Json -Compress
 
-Set-Content -Path $file -Value $payload -Encoding UTF8
+$tempFile = Join-Path $dir ([System.IO.Path]::GetRandomFileName())
+Set-Content -Path $tempFile -Value $payload -Encoding UTF8
+Move-Item -Path $tempFile -Destination $file -Force

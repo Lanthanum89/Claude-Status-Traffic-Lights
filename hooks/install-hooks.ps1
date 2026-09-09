@@ -29,7 +29,12 @@ if (Test-Path $settingsPath) {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         $settings = [PSCustomObject]@{}
     } else {
-        $settings = $raw | ConvertFrom-Json
+        try {
+            $settings = $raw | ConvertFrom-Json
+        } catch {
+            Write-Error "Existing $settingsPath is not valid JSON: $($_.Exception.Message)`nA backup was saved to $settingsPath.bak. Fix or remove the file and re-run this script."
+            exit 1
+        }
     }
 } else {
     $settings = [PSCustomObject]@{}

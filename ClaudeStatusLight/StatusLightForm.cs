@@ -41,7 +41,7 @@ public sealed class StatusLightForm : Form
         TransparencyKey = TransparentColor;
         DoubleBuffered = true;
 
-        Location = LoadPosition() ?? DefaultPosition();
+        Location = ClampToWorkingArea(LoadPosition() ?? DefaultPosition());
 
         var menu = new ContextMenuStrip();
         var exitItem = new ToolStripMenuItem("Exit");
@@ -63,6 +63,14 @@ public sealed class StatusLightForm : Form
     {
         var wa = Screen.PrimaryScreen!.WorkingArea;
         return new Point(wa.Right - Diameter - 24, 24);
+    }
+
+    private static Point ClampToWorkingArea(Point location)
+    {
+        var wa = Screen.GetWorkingArea(location);
+        var x = Math.Clamp(location.X, wa.Left, Math.Max(wa.Left, wa.Right - Diameter));
+        var y = Math.Clamp(location.Y, wa.Top, Math.Max(wa.Top, wa.Bottom - Diameter));
+        return new Point(x, y);
     }
 
     private static Point? LoadPosition()
@@ -125,7 +133,7 @@ public sealed class StatusLightForm : Form
             status = "idle";
         }
 
-        // If a "running" status hasn't been refreshed in a while (session killed, crash,
+        // If any non-idle status hasn't been refreshed in a while (session killed, crash,
         // laptop slept mid-task), fall back to idle rather than showing a stale state forever.
         if (updatedUtc is not null && DateTime.UtcNow - updatedUtc.Value > StaleAfter)
         {
