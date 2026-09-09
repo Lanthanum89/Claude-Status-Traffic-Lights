@@ -204,7 +204,7 @@ public sealed class StatusLightForm : Form
             result.Add(new ActiveSession(data.status, baseLabel));
         }
 
-        // Disambiguate sessions that share a folder name (e.g. worktrees) with a short id suffix.
+        // Disambiguate sessions that share a folder name (e.g. worktrees) with a numeric suffix.
         var seen = new Dictionary<string, int>();
         for (var i = 0; i < result.Count; i++)
         {
