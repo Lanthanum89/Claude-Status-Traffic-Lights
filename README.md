@@ -14,6 +14,7 @@ Claude Code session running at once.
   draggable panel: one coloured dot + session label per active session. A
   session's row disappears when it ends (`SessionEnd` deletes its file), or
   after 15 minutes with no update if it crashed without firing that hook
+- Labels render in JetBrains Mono if it's installed, otherwise Segoe UI
 
 ## Setup
 

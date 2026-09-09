@@ -56,7 +56,7 @@ public sealed class StatusLightForm : Form
     private static readonly string PositionFile = Path.Combine(DataDir, "position.json");
 
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 500 };
-    private readonly Font _labelFont = new("Segoe UI", 9f);
+    private readonly Font _labelFont = CreateLabelFont();
 
     private Point _dragStart;
     private bool _dragging;
@@ -97,6 +97,19 @@ public sealed class StatusLightForm : Form
     {
         var wa = Screen.PrimaryScreen!.WorkingArea;
         return new Point(wa.Right - MinWidth - 24, 24);
+    }
+
+    /// <summary>
+    /// JetBrains Mono if it's installed, otherwise Segoe UI. System.Drawing's Font
+    /// constructor doesn't throw for an unknown family, it silently substitutes a generic
+    /// GDI default -- checking FontFamily.Families first gets a deliberate, readable
+    /// fallback instead of leaving that to chance.
+    /// </summary>
+    private static Font CreateLabelFont()
+    {
+        var hasJetBrainsMono = FontFamily.Families
+            .Any(f => f.Name.Equals("JetBrains Mono", StringComparison.OrdinalIgnoreCase));
+        return new Font(hasJetBrainsMono ? "JetBrains Mono" : "Segoe UI", 9f);
     }
 
     private Point ClampToWorkingArea(Point location)
