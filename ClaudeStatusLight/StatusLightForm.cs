@@ -5,6 +5,7 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -12,6 +13,24 @@ namespace ClaudeStatusLight;
 
 /// <summary>One row in the panel: a session's status dot plus its label.</summary>
 internal sealed record SessionRow(string Label, Color Color);
+
+/// <summary>
+/// Win32 SetWindowPos, used to re-assert the topmost z-order band on every poll tick.
+/// WinForms' own TopMost property only sets this once; it doesn't self-heal if something
+/// else (another topmost window claiming the band, an external tool moving/z-ordering this
+/// window) knocks it back down.
+/// </summary>
+internal static class NativeMethods
+{
+    public static readonly IntPtr HWND_TOPMOST = new(-1);
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint uFlags);
+}
 
 public sealed class StatusLightForm : Form
 {
@@ -119,6 +138,13 @@ public sealed class StatusLightForm : Form
 
     private void PollStatus()
     {
+        // Re-assert topmost every tick: another app's own topmost window, or an external
+        // tool repositioning us via SetWindowPos with a non-topmost z-order reference, can
+        // silently knock this window out of the topmost band without ever touching the
+        // TopMost property's cached value -- so setting it once at startup isn't durable.
+        NativeMethods.SetWindowPos(Handle, NativeMethods.HWND_TOPMOST, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+
         var sessions = ReadActiveSessions();
 
         var rows = sessions.Count == 0
