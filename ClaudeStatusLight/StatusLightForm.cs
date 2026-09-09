@@ -54,14 +54,17 @@ public sealed class StatusLightForm : Form
 
     private static readonly string SessionsDir = Path.Combine(DataDir, "sessions");
     private static readonly string PositionFile = Path.Combine(DataDir, "position.json");
+    private static readonly string AliasesFile = Path.Combine(DataDir, "aliases.json");
 
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 500 };
-    private readonly Font _labelFont = new("Segoe UI", 9f);
+    private readonly Font _labelFont = CreateLabelFont();
 
     private Point _dragStart;
     private bool _dragging;
     private string _lastSignature = string.Empty;
     private List<SessionRow> _rows = new();
+    private Dictionary<string, string> _aliases = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _aliasesLastWriteUtc = DateTime.MinValue;
 
     public StatusLightForm()
     {
@@ -97,6 +100,19 @@ public sealed class StatusLightForm : Form
     {
         var wa = Screen.PrimaryScreen!.WorkingArea;
         return new Point(wa.Right - MinWidth - 24, 24);
+    }
+
+    /// <summary>
+    /// JetBrains Mono if it's installed, otherwise Segoe UI. System.Drawing's Font
+    /// constructor doesn't throw for an unknown family, it silently substitutes a generic
+    /// GDI default -- checking FontFamily.Families first gets a deliberate, readable
+    /// fallback instead of leaving that to chance.
+    /// </summary>
+    private static Font CreateLabelFont()
+    {
+        var hasJetBrainsMono = FontFamily.Families
+            .Any(f => f.Name.Equals("JetBrains Mono", StringComparison.OrdinalIgnoreCase));
+        return new Font(hasJetBrainsMono ? "JetBrains Mono" : "Segoe UI", 9f);
     }
 
     private Point ClampToWorkingArea(Point location)
@@ -176,6 +192,8 @@ public sealed class StatusLightForm : Form
 
     private List<ActiveSession> ReadActiveSessions()
     {
+        LoadAliasesIfChanged();
+
         var result = new List<ActiveSession>();
         var labelCounts = new Dictionary<string, int>();
 
@@ -225,7 +243,7 @@ public sealed class StatusLightForm : Form
             }
 
             var id = Path.GetFileNameWithoutExtension(file);
-            var baseLabel = FriendlyName(data.cwd, id);
+            var baseLabel = FriendlyName(data.cwd, id, _aliases);
             labelCounts[baseLabel] = labelCounts.GetValueOrDefault(baseLabel) + 1;
             result.Add(new ActiveSession(data.status, baseLabel));
         }
@@ -243,14 +261,69 @@ public sealed class StatusLightForm : Form
         return result;
     }
 
-    private static string FriendlyName(string? cwd, string sessionId)
+    private static string FriendlyName(string? cwd, string sessionId, IReadOnlyDictionary<string, string> aliases)
     {
+        string? folderName = null;
         if (!string.IsNullOrWhiteSpace(cwd))
         {
             var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-            if (!string.IsNullOrWhiteSpace(name)) return name;
+            if (!string.IsNullOrWhiteSpace(name)) folderName = name;
         }
+
+        // aliases.json maps folder names only -- never consult it for the sessionId fallback
+        // below, so an alias key can't accidentally rename a session with no usable cwd.
+        if (folderName is not null)
+        {
+            return aliases.TryGetValue(folderName, out var alias) && !string.IsNullOrWhiteSpace(alias)
+                ? alias
+                : folderName;
+        }
+
         return sessionId.Length > 8 ? sessionId[..8] : sessionId;
+    }
+
+    /// <summary>
+    /// Loads %LOCALAPPDATA%\ClaudeStatusLight\aliases.json, a flat { "folder-name": "Label" }
+    /// map for renaming rows in the panel. Optional -- absent or malformed just means no
+    /// aliases apply. Re-read only when the file's mtime changes, so hand-editing it while the
+    /// app is running takes effect within one poll tick, without re-parsing every tick.
+    /// </summary>
+    private void LoadAliasesIfChanged()
+    {
+        if (!File.Exists(AliasesFile))
+        {
+            if (_aliases.Count > 0) _aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _aliasesLastWriteUtc = DateTime.MinValue;
+            return;
+        }
+
+        DateTime writeTimeUtc;
+        try
+        {
+            writeTimeUtc = File.GetLastWriteTimeUtc(AliasesFile);
+        }
+        catch
+        {
+            return; // transient I/O issue, retry next tick
+        }
+        if (writeTimeUtc == _aliasesLastWriteUtc) return;
+
+        // Mark this mtime as attempted *before* parsing, even if parsing below fails, so a
+        // permanently malformed file gets re-parsed only when its mtime next changes rather
+        // than on every 500ms poll tick.
+        _aliasesLastWriteUtc = writeTimeUtc;
+        try
+        {
+            var json = File.ReadAllText(AliasesFile);
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            _aliases = parsed is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            // Malformed aliases.json -- keep the last good mapping rather than losing labels.
+        }
     }
 
     private static void TryDelete(string path)

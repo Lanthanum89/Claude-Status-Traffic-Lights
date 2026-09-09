@@ -14,6 +14,7 @@ Claude Code session running at once.
   draggable panel: one coloured dot + session label per active session. A
   session's row disappears when it ends (`SessionEnd` deletes its file), or
   after 15 minutes with no update if it crashed without firing that hook
+- Labels render in JetBrains Mono if it's installed, otherwise Segoe UI
 
 ## Setup
 
@@ -54,11 +55,29 @@ remembered on restart. Right-click to exit.
 **Run at login (optional):** press `Win+R`, type `shell:startup`, drop a
 shortcut to the installed exe in there.
 
+## Renaming sessions
+
+By default a row is labelled with its project's folder name. To override
+that, create `%LOCALAPPDATA%\ClaudeStatusLight\aliases.json` mapping folder
+names to whatever label you want:
+
+```json
+{
+  "Claude-Status-Traffic-Lights": "Status Light",
+  "Portfolio": "Website"
+}
+```
+
+Picked up within one poll tick (no restart needed) whenever the file
+changes. Not created automatically; make the folder and file yourself if you
+want it.
+
 ## Known limitation
 
 Two sessions open in the same folder (e.g. two windows on the same project,
 without git worktrees) get distinct rows disambiguated as `name (1)`,
-`name (2)`, but there's no way to tell which row is which session beyond that.
+`name (2)`, but there's no way to tell which row is which session beyond
+that -- aliases.json renames by folder, not by individual session.
 
 ## Testing without Claude Code
 
