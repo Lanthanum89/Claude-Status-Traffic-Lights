@@ -30,18 +30,34 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
         int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 
 public sealed class StatusLightForm : Form
 {
-    private const int DotDiameter = 12;
-    private const int RowHeight = 28;
-    private const int PaddingX = 10;
-    private const int PaddingY = 6;
-    private const int LabelGap = 8;
-    private const int MinWidth = 140;
-    private const int MaxWidth = 320;
-    private const int CornerRadius = 10;
+    private const int BaseDotDiameter = 12;
+    private const int BaseRowHeight = 28;
+    private const int BasePaddingX = 10;
+    private const int BasePaddingY = 6;
+    private const int BaseLabelGap = 8;
+    private const int BaseMinWidth = 140;
+    private const int BaseMaxWidth = 320;
+    private const int BaseCornerRadius = 10;
+    private const float BaseFontPixelSize = 12f;
+    private const int BaseDpi = 96;
+
+    private int DotDiameter => Sc(BaseDotDiameter);
+    private int RowHeight => Sc(BaseRowHeight);
+    private int PaddingX => Sc(BasePaddingX);
+    private int PaddingY => Sc(BasePaddingY);
+    private int LabelGap => Sc(BaseLabelGap);
+    private int MinWidth => Sc(BaseMinWidth);
+    private int MaxWidth => Sc(BaseMaxWidth);
+    private int CornerRadius => Sc(BaseCornerRadius);
+
+    private int Sc(int v) => Math.Max(1, (int)Math.Round(v * _scale));
 
     private static readonly Color BackgroundColor = Color.FromArgb(30, 32, 36);
     private static readonly Color BorderColor = Color.FromArgb(60, 62, 68);
@@ -57,8 +73,9 @@ public sealed class StatusLightForm : Form
     private static readonly string AliasesFile = Path.Combine(DataDir, "aliases.json");
 
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 500 };
-    private readonly Font _labelFont = CreateLabelFont();
+    private Font _labelFont;
 
+    private float _scale = 1f;
     private Point _dragStart;
     private bool _dragging;
     private string _lastSignature = string.Empty;
@@ -72,9 +89,18 @@ public sealed class StatusLightForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.None;
         BackColor = BackgroundColor;
         DoubleBuffered = true;
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+
+        // Force handle creation now so GetDpiForWindow reflects the monitor this window is
+        // actually born on. Form.DeviceDpi is unreliable at this point: a window created on a
+        // non-96-DPI monitor reads 96 here and never self-corrects, because WM_DPICHANGED only
+        // fires on a *change* and being born scaled isn't one.
+        _ = Handle;
+        _scale = CurrentDpi() / (float)BaseDpi;
+        _labelFont = CreateLabelFont(_scale);
 
         Size = new Size(MinWidth, PaddingY * 2 + RowHeight);
         ApplyRoundedRegion();
@@ -90,13 +116,53 @@ public sealed class StatusLightForm : Form
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
 
-        _pollTimer.Tick += (_, _) => PollStatus();
+        _pollTimer.Tick += (_, _) =>
+        {
+            ApplyScale();
+            PollStatus();
+        };
         _pollTimer.Start();
 
         PollStatus();
     }
 
-    private static Point DefaultPosition()
+    /// <summary>
+    /// GetDpiForWindow, falling back to DeviceDpi if the P/Invoke call itself fails. Prefer
+    /// this over DeviceDpi alone: DeviceDpi is unreliable right at handle creation on a
+    /// non-96-DPI monitor, since WM_DPICHANGED only fires on a *change* and being born scaled
+    /// isn't one.
+    /// </summary>
+    private uint CurrentDpi()
+    {
+        try
+        {
+            var dpi = NativeMethods.GetDpiForWindow(Handle);
+            return dpi > 0 ? dpi : (uint)DeviceDpi;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return (uint)DeviceDpi;
+        }
+    }
+
+    /// <summary>
+    /// Re-reads the window's current DPI and rescales layout if it changed. Cheap no-op on
+    /// every poll tick when nothing changed; catches DPI changes OnDpiChanged might miss and
+    /// covers the case where the window was born on a scaled monitor.
+    /// </summary>
+    private void ApplyScale()
+    {
+        var newScale = CurrentDpi() / (float)BaseDpi;
+        if (Math.Abs(newScale - _scale) < 0.001f) return;
+
+        _scale = newScale;
+        var oldFont = _labelFont;
+        _labelFont = CreateLabelFont(_scale);
+        oldFont.Dispose();
+        RelayOut();
+    }
+
+    private Point DefaultPosition()
     {
         var wa = Screen.PrimaryScreen!.WorkingArea;
         return new Point(wa.Right - MinWidth - 24, 24);
@@ -106,13 +172,16 @@ public sealed class StatusLightForm : Form
     /// JetBrains Mono if it's installed, otherwise Segoe UI. System.Drawing's Font
     /// constructor doesn't throw for an unknown family, it silently substitutes a generic
     /// GDI default -- checking FontFamily.Families first gets a deliberate, readable
-    /// fallback instead of leaving that to chance.
+    /// fallback instead of leaving that to chance. Built in pixels, not points, so it scales
+    /// in lockstep with the pixel-based layout constants instead of drifting from them at
+    /// non-96 DPI.
     /// </summary>
-    private static Font CreateLabelFont()
+    private static Font CreateLabelFont(float scale)
     {
         var hasJetBrainsMono = FontFamily.Families
             .Any(f => f.Name.Equals("JetBrains Mono", StringComparison.OrdinalIgnoreCase));
-        return new Font(hasJetBrainsMono ? "JetBrains Mono" : "Segoe UI", 9f);
+        return new Font(hasJetBrainsMono ? "JetBrains Mono" : "Segoe UI",
+            BaseFontPixelSize * scale, GraphicsUnit.Pixel);
     }
 
     private Point ClampToWorkingArea(Point location)
@@ -123,6 +192,13 @@ public sealed class StatusLightForm : Form
         return new Point(x, y);
     }
 
+    /// <summary>
+    /// A saved position from a previous run can be in a different coordinate space (e.g. an
+    /// old build's DPI-unaware virtualized coordinates, or a monitor that's since been
+    /// unplugged). Screen.GetWorkingArea silently snaps an off-desktop point to the nearest
+    /// screen instead of failing, which would otherwise drag the window across a DPI boundary
+    /// on every resize -- so a position outside every screen's bounds is treated as absent.
+    /// </summary>
     private static Point? LoadPosition()
     {
         try
@@ -130,7 +206,11 @@ public sealed class StatusLightForm : Form
             if (!File.Exists(PositionFile)) return null;
             var json = File.ReadAllText(PositionFile);
             var pos = JsonSerializer.Deserialize<SavedPosition>(json);
-            return pos is null ? null : new Point(pos.X, pos.Y);
+            if (pos is null) return null;
+
+            var point = new Point(pos.X, pos.Y);
+            var onScreen = Screen.AllScreens.Any(s => s.Bounds.Contains(point));
+            return onScreen ? point : null;
         }
         catch
         {
@@ -172,7 +252,17 @@ public sealed class StatusLightForm : Form
         _lastSignature = signature;
         _rows = rows;
 
-        Size = new Size(ComputeWidth(rows), PaddingY * 2 + RowHeight * rows.Count);
+        RelayOut();
+    }
+
+    /// <summary>
+    /// Resizes/reshapes the window for the current row set and DPI scale. Shared by the
+    /// row-change path in PollStatus and the DPI-change path in ApplyScale/OnDpiChanged, so
+    /// both stay in sync instead of duplicating the resize logic.
+    /// </summary>
+    private void RelayOut()
+    {
+        Size = new Size(ComputeWidth(_rows), PaddingY * 2 + RowHeight * _rows.Count);
         ApplyRoundedRegion();
         Location = ClampToWorkingArea(Location);
         Invalidate();
@@ -357,6 +447,12 @@ public sealed class StatusLightForm : Form
         path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyScale();
     }
 
     protected override void OnPaint(PaintEventArgs e)
