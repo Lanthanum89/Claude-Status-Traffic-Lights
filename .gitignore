@@ -1,0 +1,20 @@
+# .NET build artifacts
+bin/
+obj/
+publish/
+*.user
+*.suo
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.userosscache
+*.sln.docstates
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
